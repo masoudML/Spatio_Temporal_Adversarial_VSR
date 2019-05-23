@@ -22,6 +22,9 @@ import numpy as np
 import pdb
 import socket
 import time
+import torchvision.transforms as transforms
+import cv2
+import PWCNet
 
 # Training settings
 parser = argparse.ArgumentParser(description='PyTorch Super Res Example')
@@ -45,7 +48,7 @@ parser.add_argument('--patch_size', type=int, default=64, help='0 to use origina
 parser.add_argument('--data_augmentation', type=bool, default=True)
 parser.add_argument('--model_type', type=str, default='RBPN')
 parser.add_argument('--residual', type=bool, default=False)
-parser.add_argument('--pretrained_sr', default='3x_dl10VDBPNF7_epoch_84.pth', help='sr pretrained base model')
+parser.add_argument('--pretrained_sr', default='RBPN_4x.pth', help='sr pretrained base model')
 parser.add_argument('--pretrained', type=bool, default=True)
 parser.add_argument('--save_folder', default='weights/', help='Location to save checkpoint models')
 parser.add_argument('--prefix', default='F7', help='Location to save checkpoint models')
@@ -108,6 +111,32 @@ def train(epoch):
             target_real = Variable(torch.rand(opt.batchSize,1)*0.5 + 0.7)
             target_fake = Variable(torch.rand(opt.batchSize,1)*0.3)
 
+        #print('#################################################')
+        #print(high_res_real.shape)
+        #print(torch.max(high_res_real))
+        #print(high_res_fake.shape)
+        #print(torch.max(high_res_fake))
+        #in_img = transforms.ToPILImage()(high_res_real[0].cpu())
+        #in_img.save("./hd_in_img.png","PNG")
+        #neighbor_img = transforms.ToPILImage()(r_neigbor[0][0].cpu())
+        #neighbor_img.save("./hd_neighbor_img.png","PNG")
+        #print('#################################################')
+    
+        flow_left_real = get_pwc_flow(pwc_flow,high_res_real, r_neigbor[0])
+        flow_right_real = get_pwc_flow(pwc_flow,high_res_real, r_neigbor[1])
+        flow_real = torch.cat((flow_left_real,flow_right_real ),dim=1).to('cuda:1')
+        
+        flow_left_fake = get_pwc_flow(pwc_flow,high_res_fake, r_neigbor[0])
+        flow_right_fake = get_pwc_flow(pwc_flow,high_res_fake, r_neigbor[1])
+        
+        flow_fake = torch.cat((flow_left_fake,flow_right_fake),dim=1)
+        
+        #print(flow_real.shape)
+        #print(flow_fake.shape)
+
+        #print('#################################################')
+            
+        #print(tt.shape)
         #Discriminator Flow Images
         dflow = []
         dflow.append(disc_flow[2].cuda(1))
@@ -115,8 +144,16 @@ def train(epoch):
 
         discriminator_loss = adversarial_criterion(discriminator(high_res_real,r_neigbor,dflow), target_real) + \
                              adversarial_criterion(discriminator(Variable(high_res_fake.data).cuda(1),r_neigbor,dflow), target_fake)
-        generator_adv_loss = 1e-3*adversarial_criterion(discriminator(Variable(high_res_fake.data).cuda(1),r_neigbor,dflow), ones_const)
+        discriminator_flow_loss = adversarial_criterion(discriminator(flow_real,r_neigbor), target_real) + \
+                             adversarial_criterion(discriminator(Variable(flow_fake.data).cuda(1),r_neigbor), target_fake)
+       
+        discriminator_loss += discriminator_flow_loss
 
+        generator_adv_loss = 1e-3*adversarial_criterion(discriminator(Variable(high_res_fake.data).cuda(1),r_neigbor,dflow), ones_const) 
+        generator_adv_flow_loss = 1e-3*adversarial_criterion(discriminator(Variable(flow_fake.data).cuda(1),r_neigbor), ones_const)
+        
+        generator_adv_loss += generator_adv_flow_loss
+        
         target_norm = (target/torch.max(target)).to('cuda:1')
         prediction_norm = (prediction/torch.max(prediction)).to('cuda:1')
 
@@ -145,9 +182,12 @@ def train(epoch):
         discriminator_loss.backward()
         optim_discriminator.step()
 
-        avg_psnr1 = PSNR(target[0], prediction[0])
-        avg_psnr2 = PSNR(target[1], prediction[1])
-        avg_psnr += (avg_psnr1+avg_psnr2)/2.0
+        avg_batch_psnr = PSNR(target[0], prediction[0])
+        if opt.batchSize > 1:
+            avg_psnr2 = PSNR(target[1], prediction[1])
+            avg_psnr += (avg_batch_psnr+avg_psnr2)/2.0
+    
+        avg_psnr += avg_batch_psnr
         counter +=1
 
         #if iteration % 10 ==0:
@@ -161,7 +201,7 @@ def train(epoch):
         
         #print("===> Epoch[{}]({}/{}): Loss: {:.4f} || Timer: {:.4f} sec.".format(epoch, iteration, len(training_data_loader), loss.data[0], (t1 - t0)))
         print('#########################################################################')
-        print("===> Epoch[{}]({}/{}): PSNR: {:.4f},Loss: {:.4f}, VGG Loss {:.8f}, genAdv Loss {:.8f}, discAdv Loss {:.8f}  || Timer: {:.4f} sec.".format(epoch, iteration, len(training_data_loader),(avg_psnr1+avg_psnr2)/2.0,loss.data,vgg_loss, generator_adv_loss,discriminator_loss,  (t1 - t0)))
+        print("===> Epoch[{}]({}/{}): PSNR: {:.4f},Loss: {:.4f}, VGG Loss {:.8f}, genAdv Loss {:.8f}, discAdv Loss {:.8f}  || Timer: {:.4f} sec.".format(epoch, iteration, len(training_data_loader),avg_batch_psnr,loss.data,vgg_loss, generator_adv_loss,discriminator_loss,  (t1 - t0)))
 #    print("===> Epoch {} Complete: Avg. Loss: {:.4f}".format(epoch, epoch_loss / len(training_data_loader)))
     print("===> Epoch {} Complete: Avg. Loss: {:.4f} Avg. Disc Loss {:.8f}".format(epoch, epoch_loss / len(training_data_loader),mean_discriminator_loss/len(training_data_loader)))
     writer.add_scalar('data/avg_epoch_loss', epoch_loss/len(training_data_loader), epoch)
@@ -196,6 +236,27 @@ def PSNR(pred, gt, shave_border=0):
     if rmse == 0:
         return 100
     return 20 * math.log10(255.0 / rmse)
+
+def get_pwc_flow(model, im1,im2):
+    #im1 = 1.0 * im1/255.0
+    #im2 = 1.0 * im2/255.0
+
+    flow_input = torch.cat((im1,im2), dim=1)
+    flow_input = flow_input.to(torch.device('cuda:0'))
+    model.eval()
+    flow_neighbor_pwc = model(flow_input)
+    flow_neighbor_pwc = 20 * nn.Upsample(scale_factor=4, mode='bilinear')(flow_neighbor_pwc)
+    
+    objectOutput = open('./pwc_flow.flo', 'wb')
+    tens = flow_neighbor_pwc[0]
+    #tens = flow[i][0]
+    np.array([ 80, 73, 69, 72 ], np.uint8).tofile(objectOutput)
+    np.array([tens.size(2), tens.size(1)], np.int32).tofile(objectOutput)
+    np.array(tens.cpu().detach().numpy().transpose(1, 2, 0), np.float32).tofile(objectOutput)
+    objectOutput.close()
+
+    return flow_neighbor_pwc
+
 
 def eval(model,predicted, target):
     model.eval()
@@ -323,6 +384,8 @@ criterion = nn.L1Loss()
 content_criterion = nn.MSELoss()
 adversarial_criterion = nn.BCELoss()
 ones_const = Variable(torch.ones(opt.batchSize, 1).cuda(1))
+
+pwc_flow = PWCNet.__dict__['pwc_dc_net']("./PWCNet/pwc_net.pth.tar").cuda(0)
 
 print('---------- Networks architecture -------------')
 print_network(model)

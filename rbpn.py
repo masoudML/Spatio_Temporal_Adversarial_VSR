@@ -21,10 +21,12 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
 
+        self.feat0_flow = ConvBlock(4, 128, 3, 2, 1, activation='prelu', norm='batch')
         self.feat0 = ConvBlock(3, 128, 3, 2, 1, activation='prelu', norm='batch')
         self.feat01 = ConvBlock(128, 256, 3, 2, 1, activation='prelu', norm='batch')
 
         self.feat1 = ConvBlock(8, 5, 3, 1, 1, activation='prelu', norm='batch')
+        self.feat1_flow = ConvBlock(5, 5, 3, 1, 1, activation='prelu', norm='batch')
         self.feat2 = ConvBlock(5, 3, 3, 1, 1, activation='prelu', norm='batch')
 
         self.conv1 = nn.Conv2d(3, 64, 3, stride=1, padding=1)
@@ -63,12 +65,18 @@ class Discriminator(nn.Module):
     def swish(self,x):
         return x * F.sigmoid(x)
 
-    def forward(self, target,neigbor,flow):
+    def forward(self, target,neigbor,flow=None):
         #All 3 inputs - target, neigbor and flow are 4x scale images
-        feat_input = self.feat0(target)
+        input_channels = target.shape[1]//2
+        if flow is None:
+            feat_input = self.feat0_flow(target)
+        else:
+            feat_input = self.feat0(target)
         feat_input = self.feat01(feat_input)
 
+
         for j in range(len(neigbor)):
+
             #print('********* SHAPES *******')
             #print('shape of target is',target.shape)
             #print('shape of feat_input is',feat_input.shape)
@@ -76,7 +84,11 @@ class Discriminator(nn.Module):
             #print('shape of flow is',flow[j].shape)
             #print('********* END SHAPES *******')
             #feat_frame.append(self.feat1(torch.cat((x.float(), neigbor[j].float(), flow[j].float()),1)))
-            x = self.feat1(torch.cat((target.float(), neigbor[j].float(), flow[j].float()),1))
+            if flow is None:
+                targ = target[:,(input_channels*j):(input_channels*(j+1)),:,:]
+                x = self.feat1_flow(torch.cat((targ.float(), neigbor[j].float()),1))
+            else:
+                x = self.feat1(torch.cat((target.float(), neigbor[j].float(), flow[j].float()),1))
             #print('shape after feat1',x.shape)
             x = self.feat2(x)
             #print('shape after feat2',x.shape)
