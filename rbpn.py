@@ -21,12 +21,12 @@ class Discriminator(nn.Module):
     def __init__(self):
         super(Discriminator, self).__init__()
 
-        self.feat0_flow = ConvBlock(4, 128, 3, 2, 1, activation='prelu', norm='batch')
+        #self.feat0_flow = ConvBlock(4, 128, 3, 2, 1, activation='prelu', norm='batch')
         self.feat0 = ConvBlock(3, 128, 3, 2, 1, activation='prelu', norm='batch')
         self.feat01 = ConvBlock(128, 256, 3, 2, 1, activation='prelu', norm='batch')
 
         self.feat1 = ConvBlock(8, 5, 3, 1, 1, activation='prelu', norm='batch')
-        self.feat1_flow = ConvBlock(5, 5, 3, 1, 1, activation='prelu', norm='batch')
+        #self.feat1_flow = ConvBlock(5, 5, 3, 1, 1, activation='prelu', norm='batch')
         self.feat2 = ConvBlock(5, 3, 3, 1, 1, activation='prelu', norm='batch')
 
         self.conv1 = nn.Conv2d(3, 64, 3, stride=1, padding=1)
@@ -40,13 +40,14 @@ class Discriminator(nn.Module):
         self.bn5 = nn.BatchNorm2d(256) #2,256,64,64
         self.conv6 = nn.Conv2d(256, 256, 3, stride=1, padding=1)
         self.bn6 = nn.BatchNorm2d(256)
-        #self.conv7 = nn.Conv2d(256, 512, 3, stride=1, padding=1)
-        #self.bn7 = nn.BatchNorm2d(512)
-        #self.conv8 = nn.Conv2d(512, 512, 3, stride=1, padding=1)
-        #self.bn8 = nn.BatchNorm2d(512)
+        self.conv7 = nn.Conv2d(256, 512, 3, stride=1, padding=1)
+        self.bn7 = nn.BatchNorm2d(512)
+        self.conv8 = nn.Conv2d(512, 256, 3, stride=1, padding=1)
+        self.bn8 = nn.BatchNorm2d(256)
         self.convmerge = nn.Conv2d(512,256 ,3, stride=1, padding=1)
         self.bnmerge = nn.BatchNorm2d(256)
-
+        self.conv9 = nn.Conv2d(256,256 ,3, stride=1, padding=1)
+        self.bn9 = nn.BatchNorm2d(256)
 
 
         # Replaced original paper FC layers with FCN
@@ -73,7 +74,6 @@ class Discriminator(nn.Module):
         else:
             feat_input = self.feat0(target)
         feat_input = self.feat01(feat_input)
-
 
         for j in range(len(neigbor)):
 
@@ -105,12 +105,13 @@ class Discriminator(nn.Module):
             #print('shape after conv5',x.shape)
             x = self.swish(self.bn6(self.conv6(x)))
             #print('shape after conv6',x.shape)
-            #x = swish(self.bn7(self.conv7(x)))
+            x = self.swish(self.bn7(self.conv7(x)))
             #print('shape after conv7',x.shape)
-            #x = swish(self.bn8(self.conv8(x)))
+            x = self.swish(self.bn8(self.conv8(x)))
             #print('shape of output of recurrence 1/conv8 is',x.shape)
             #print('shape of feat_input is',feat_input.shape)
-            feat_input = self.swish(self.convmerge(torch.cat((feat_input,x),1)))
+            feat_input = self.swish(self.bnmerge(self.convmerge(torch.cat((feat_input,x),1))))
+            feat_input = self.swish(self.bn9(self.conv9(feat_input)))
         out = self.conv_nin(feat_input)
         return F.sigmoid(F.avg_pool2d(out, out.size()[2:])).view(out.size()[0], -1)
 

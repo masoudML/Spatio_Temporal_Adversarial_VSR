@@ -54,7 +54,7 @@ parser.add_argument('--save_folder', default='weights/', help='Location to save 
 parser.add_argument('--prefix', default='F7', help='Location to save checkpoint models')
 parser.add_argument('--pretrained_disc', default='', help='sr pretrained DISC base model')
 parser.add_argument('--chop_forward', type=bool, default=False)
-
+parser.add_argument('--freeze_gen', type=bool, default=False)
 
 opt = parser.parse_args()
 gpus_list = range(opt.gpus)
@@ -68,7 +68,14 @@ def train(epoch):
     mean_generator_adversarial_loss = 0.0
     mean_generator_total_loss = 0.0
     mean_discriminator_loss = 0.0    
-    model.train()
+    mean_discriminator_flow_adversarial_loss = 0.0
+    mean_generator_flow_adversarial_loss = 0.0
+    if opt.freeze_gen:
+        print('%%%%%%%%%%%%%%%%%%%%%%%%%% no GEN train %%%%%%%%%%%%%%%%%%%')
+        model.eval()
+    else:
+        print('%%%%%%%%%%%%%%%%%%%%%%%%%% Train %%%%%%%%%%%%%%%%%%%')
+        model.train()
     iteration = 0
     avg_psnr = 0.0
     counter = 0.0
@@ -122,14 +129,14 @@ def train(epoch):
         #neighbor_img.save("./hd_neighbor_img.png","PNG")
         #print('#################################################')
     
-        flow_left_real = get_pwc_flow(pwc_flow,high_res_real, r_neigbor[0])
-        flow_right_real = get_pwc_flow(pwc_flow,high_res_real, r_neigbor[1])
-        flow_real = torch.cat((flow_left_real,flow_right_real ),dim=1).to('cuda:1')
+        #flow_left_real = get_pwc_flow(pwc_flow,high_res_real, r_neigbor[0])
+        #flow_right_real = get_pwc_flow(pwc_flow,high_res_real, r_neigbor[1])
+        #flow_real = torch.cat((flow_left_real,flow_right_real ),dim=1).to('cuda:1')
         
-        flow_left_fake = get_pwc_flow(pwc_flow,high_res_fake, r_neigbor[0])
-        flow_right_fake = get_pwc_flow(pwc_flow,high_res_fake, r_neigbor[1])
+        #flow_left_fake = get_pwc_flow(pwc_flow,high_res_fake, r_neigbor[0])
+        #flow_right_fake = get_pwc_flow(pwc_flow,high_res_fake, r_neigbor[1])
         
-        flow_fake = torch.cat((flow_left_fake,flow_right_fake),dim=1)
+        #flow_fake = torch.cat((flow_left_fake,flow_right_fake),dim=1)
         
         #print(flow_real.shape)
         #print(flow_fake.shape)
@@ -144,15 +151,15 @@ def train(epoch):
 
         discriminator_loss = adversarial_criterion(discriminator(high_res_real,r_neigbor,dflow), target_real) + \
                              adversarial_criterion(discriminator(Variable(high_res_fake.data).cuda(1),r_neigbor,dflow), target_fake)
-        discriminator_flow_loss = adversarial_criterion(discriminator(flow_real,r_neigbor), target_real) + \
-                             adversarial_criterion(discriminator(Variable(flow_fake.data).cuda(1),r_neigbor), target_fake)
+        #discriminator_flow_loss = adversarial_criterion(discriminator(flow_real,r_neigbor), target_real) + \
+        #                     adversarial_criterion(discriminator(Variable(flow_fake.data).cuda(1),r_neigbor), target_fake)
        
-        discriminator_loss += discriminator_flow_loss
+        #discriminator_loss += discriminator_flow_loss
 
-        generator_adv_loss = 1e-3*adversarial_criterion(discriminator(Variable(high_res_fake.data).cuda(1),r_neigbor,dflow), ones_const) 
-        generator_adv_flow_loss = 1e-3*adversarial_criterion(discriminator(Variable(flow_fake.data).cuda(1),r_neigbor), ones_const)
+        generator_adv_loss = 5e-2*adversarial_criterion(discriminator(Variable(high_res_fake.data).cuda(1),r_neigbor,dflow), ones_const) 
+        #generator_adv_flow_loss = 1e-3*adversarial_criterion(discriminator(Variable(flow_fake.data).cuda(1),r_neigbor), ones_const)
         
-        generator_adv_loss += generator_adv_flow_loss
+        #generator_adv_loss += generator_adv_flow_loss
         
         target_norm = (target/torch.max(target)).to('cuda:1')
         prediction_norm = (prediction/torch.max(prediction)).to('cuda:1')
@@ -162,7 +169,7 @@ def train(epoch):
         
         vgg_loss = 0.006*content_criterion(fake_features, real_features)
 
-        loss = criterion(high_res_fake, high_res_real) + vgg_loss + generator_adv_loss
+        loss = 0.001*criterion(high_res_fake, high_res_real) + vgg_loss + generator_adv_loss
         t1 = time.time()
 
         #--- VGG/Context Loss
@@ -174,12 +181,21 @@ def train(epoch):
         #--- Disc Adv Loss
         mean_discriminator_loss += discriminator_loss.data
 
+        # flow adv losses 
+        #mean_discriminator_flow_adversarial_loss += discriminator_flow_loss.data
+        #mean_generator_flow_adversarial_loss += generator_adv_flow_loss.data
 
         epoch_loss += loss.data
-        loss.backward()
-        optimizer.step()
+        if not opt.freeze_gen:
+            print('$$$$$$$$$$$$$$$$$$$$$ backward $$$$$$$$$$$$$$$$$$$')
+            loss.backward()
+            optimizer.step()
+        else:
+            print('$$$$$$$$$$$$$$$$$$$$$ No backward $$$$$$$$$$$$$$$$$$$')
+
 
         discriminator_loss.backward()
+        nn.utils.clip_grad_norm_(discriminator.parameters(), 5)
         optim_discriminator.step()
 
         avg_batch_psnr = PSNR(target[0], prediction[0])
@@ -208,6 +224,8 @@ def train(epoch):
     writer.add_scalar('data/avg_gen_vgg_loss', mean_generator_content_loss/len(training_data_loader), epoch)
     writer.add_scalar('data/avg_gen_adv_loss', mean_generator_adversarial_loss/len(training_data_loader), epoch)
     writer.add_scalar('data/avg_disc_adv_loss', mean_discriminator_loss/len(training_data_loader), epoch)
+    #writer.add_scalar('data/avg_disc_flow_adv_loss', mean_discriminator_flow_adversarial_loss/len(training_data_loader), epoch)
+    #writer.add_scalar('data/avg_gen_flow_adv_loss', mean_generator_flow_adversarial_loss/len(training_data_loader), epoch)
 
     return (avg_psnr/counter)
 
@@ -374,6 +392,11 @@ testing_data_loader = DataLoader(dataset=test_set, num_workers=opt.threads, batc
 print('===> Building model ', opt.model_type)
 if opt.model_type == 'RBPN':
     model = RBPN(num_channels=3, base_filter=256,  feat = 64, num_stages=3, n_resblock=5, nFrames=opt.nFrames, scale_factor=opt.upscale_factor) 
+    if opt.freeze_gen:
+        print('Freezing Generator')
+        for param in model.parameters():
+            param.requires_grad = False
+        
     discriminator = Discriminator().cuda(1) #1
 
 
@@ -385,11 +408,12 @@ content_criterion = nn.MSELoss()
 adversarial_criterion = nn.BCELoss()
 ones_const = Variable(torch.ones(opt.batchSize, 1).cuda(1))
 
-pwc_flow = PWCNet.__dict__['pwc_dc_net']("./PWCNet/pwc_net.pth.tar").cuda(0)
+#pwc_flow = PWCNet.__dict__['pwc_dc_net']("./PWCNet/pwc_net.pth.tar").cuda(0)
 
 print('---------- Networks architecture -------------')
 print_network(model)
 print('----------------------------------------------')
+print(opt.pretrained)
 
 if opt.pretrained:
     model_name = os.path.join(opt.save_folder + opt.pretrained_sr)
